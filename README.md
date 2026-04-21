@@ -92,4 +92,4 @@ ollama serve
 
 ## Licença
 
-Defina a licença desejada para o projeto (ex.: MIT) antes da publicação.
+MIT
