@@ -4,6 +4,7 @@ Inicie com: python app.py
 """
 import json
 import os
+import re
 import winsound
 import queue
 import threading
@@ -43,6 +44,105 @@ def _btn(parent, text, cmd, bg=BG3, fg=FG, bold=False, **kw):
                      relief="flat", cursor="hand2", font=font, **kw)
 
 
+# ─── Markdown rendering ──────────────────────────────────────────
+_MD_INLINE = re.compile(
+    r'\*\*\*(.+?)\*\*\*'
+    r'|\*\*(.+?)\*\*'
+    r'|\*(.+?)\*'
+    r'|_(.+?)_'
+    r'|`(.+?)`',
+    re.DOTALL,
+)
+
+
+def _insert_inline(widget: tk.Text, text: str, base: str) -> None:
+    """Insert text applying bold/italic/code inline markdown."""
+    last = 0
+    for m in _MD_INLINE.finditer(text):
+        if m.start() > last:
+            widget.insert(tk.END, text[last:m.start()], base)
+        g1, g2, g3, g4, g5 = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
+        if g1:
+            widget.insert(tk.END, g1, ("ai_bold", "italic"))
+        elif g2:
+            widget.insert(tk.END, g2, "ai_bold")
+        elif g3 or g4:
+            widget.insert(tk.END, (g3 or g4), "italic")
+        elif g5:
+            widget.insert(tk.END, g5, "code_inline")
+        last = m.end()
+    if last < len(text):
+        widget.insert(tk.END, text[last:], base)
+
+
+def _insert_markdown(widget: tk.Text, text: str) -> None:
+    """Render a full markdown string into a Tkinter Text widget."""
+    in_code = False
+    code_buf: list = []
+    for line in text.split('\n'):
+        stripped = line.strip()
+        # ── Code fence ──────────────────────────────────────────
+        if stripped.startswith('```'):
+            if not in_code:
+                in_code = True
+                code_buf = []
+            else:
+                in_code = False
+                widget.insert(tk.END, '\n'.join(code_buf) + '\n', "code_block")
+            continue
+        if in_code:
+            code_buf.append(line)
+            continue
+        # ── Headings ────────────────────────────────────────────
+        if stripped.startswith('### '):
+            _insert_inline(widget, stripped[4:], "h3")
+            widget.insert(tk.END, '\n')
+        elif stripped.startswith('## '):
+            _insert_inline(widget, stripped[3:], "h2")
+            widget.insert(tk.END, '\n')
+        elif stripped.startswith('# '):
+            _insert_inline(widget, stripped[2:], "h1")
+            widget.insert(tk.END, '\n')
+        # ── Horizontal rule ─────────────────────────────────────
+        elif re.match(r'^[-*_]{3,}$', stripped):
+            widget.insert(tk.END, '\u2500' * 56 + '\n', "rule")
+        # ── Blockquote ──────────────────────────────────────────
+        elif stripped.startswith('> '):
+            _insert_inline(widget, stripped[2:], "quote")
+            widget.insert(tk.END, '\n')
+        elif stripped.startswith('>'):
+            _insert_inline(widget, stripped[1:].lstrip(), "quote")
+            widget.insert(tk.END, '\n')
+        # ── Table separator row (skip) ───────────────────────────
+        elif re.match(r'^\|[\s\-:|]+\|', stripped):
+            pass
+        # ── Table row ───────────────────────────────────────────
+        elif stripped.startswith('|') and stripped.endswith('|'):
+            widget.insert(tk.END, stripped + '\n', "table")
+        # ── Bullet list ─────────────────────────────────────────
+        elif re.match(r'^(\s*)[-*+]\s+', line):
+            m = re.match(r'^(\s*)[-*+]\s+(.*)', line)
+            depth = len(m.group(1)) // 2
+            widget.insert(tk.END, '  ' * depth + '\u2022 ', "bullet")
+            _insert_inline(widget, m.group(2), "ai_txt")
+            widget.insert(tk.END, '\n')
+        # ── Numbered list ───────────────────────────────────────
+        elif re.match(r'^(\s*)\d+\.\s+', line):
+            m = re.match(r'^(\s*)(\d+\.)\s+(.*)', line)
+            depth = len(m.group(1)) // 2
+            widget.insert(tk.END, '  ' * depth + m.group(2) + ' ', "bullet")
+            _insert_inline(widget, m.group(3), "ai_txt")
+            widget.insert(tk.END, '\n')
+        # ── Blank line ──────────────────────────────────────────
+        elif stripped == '':
+            widget.insert(tk.END, '\n')
+        # ── Normal paragraph ────────────────────────────────────
+        else:
+            _insert_inline(widget, line, "ai_txt")
+            widget.insert(tk.END, '\n')
+
+
+
 class App:
     # ══════════════════════════════════════════════════════════════
     # Init
@@ -65,6 +165,7 @@ class App:
         self._q: queue.Queue    = queue.Queue()
         self._t_start           = 0.0
         self._token_count       = 0
+        self._ai_buffer         = ""
 
         self._build_ui()
         self._load_data()
@@ -156,14 +257,27 @@ class App:
         self._chat.grid(row=0, column=0, sticky="nsew")
         vscroll.grid(row=0, column=1, sticky="ns")
 
-        # Text tags
-        self._chat.tag_configure("user_lbl",  foreground=USER_FG, font=("Consolas", 10, "bold"))
-        self._chat.tag_configure("user_txt",  foreground=USER_FG)
-        self._chat.tag_configure("ai_lbl",    foreground=ACCENT,  font=("Consolas", 10, "bold"))
-        self._chat.tag_configure("ai_txt",    foreground=AI_FG)
-        self._chat.tag_configure("ai_bold",   foreground=AI_FG,   font=("Consolas", 10, "bold"))
-        self._chat.tag_configure("thinking",  foreground=THINK_FG, font=("Consolas", 9, "italic"))
-        self._chat.tag_configure("error_txt", foreground=ERR_FG)
+        # Text tags — base
+        self._chat.tag_configure("user_lbl",    foreground=USER_FG, font=("Consolas", 10, "bold"))
+        self._chat.tag_configure("user_txt",    foreground=USER_FG)
+        self._chat.tag_configure("ai_lbl",      foreground=ACCENT,  font=("Consolas", 10, "bold"))
+        self._chat.tag_configure("ai_txt",      foreground=AI_FG)
+        self._chat.tag_configure("ai_bold",     foreground=AI_FG,   font=("Consolas", 10, "bold"))
+        self._chat.tag_configure("thinking",    foreground=THINK_FG, font=("Consolas", 9, "italic"))
+        self._chat.tag_configure("error_txt",   foreground=ERR_FG)
+        # Text tags — markdown
+        self._chat.tag_configure("h1",          foreground=ACCENT,  font=("Consolas", 14, "bold"))
+        self._chat.tag_configure("h2",          foreground=ACCENT,  font=("Consolas", 12, "bold"))
+        self._chat.tag_configure("h3",          foreground=ACCENT,  font=("Consolas", 11, "bold"))
+        self._chat.tag_configure("italic",      foreground=AI_FG,   font=("Consolas", 10, "italic"))
+        self._chat.tag_configure("code_inline", foreground="#a6e3a1", background=BG3, font=("Consolas", 10))
+        self._chat.tag_configure("code_block",  foreground="#a6e3a1", background=BG2, font=("Consolas", 10),
+                                 lmargin1=20, lmargin2=20)
+        self._chat.tag_configure("rule",        foreground=FG3)
+        self._chat.tag_configure("quote",       foreground=FG2,    font=("Consolas", 10, "italic"),
+                                 lmargin1=20, lmargin2=20)
+        self._chat.tag_configure("bullet",      foreground=FG2,    lmargin1=10, lmargin2=24)
+        self._chat.tag_configure("table",       foreground=AI_FG,  font=("Courier New", 9), background=BG2)
 
         # Input box
         self._input = tk.Text(
@@ -267,19 +381,12 @@ class App:
             if role == "user":
                 self._chat.insert(tk.END, "Você:  ", "user_lbl")
                 self._chat.insert(tk.END, content + "\n\n", "user_txt")
-            elif role == "assistant":
+            elif role == "assistant" and content:
                 self._chat.insert(tk.END, "AI:  ", "ai_lbl")
-                self._insert_md(content)
-                self._chat.insert(tk.END, "\n\n", "ai_txt")
+                _insert_markdown(self._chat, content)
+                self._chat.insert(tk.END, "\n")
         self._chat.config(state="disabled")
         self._chat.see(tk.END)
-
-    def _insert_md(self, text: str):
-        """Render **bold** markdown inline."""
-        parts = text.split("**")
-        for i, part in enumerate(parts):
-            if part:
-                self._chat.insert(tk.END, part, "ai_bold" if i % 2 else "ai_txt")
 
     # ══════════════════════════════════════════════════════════════
     # Queue polling — bridge between background thread and Tkinter
@@ -289,7 +396,8 @@ class App:
             for _ in range(100):          # drain up to 100 items per tick
                 kind, data = self._q.get_nowait()
                 if kind == "token":
-                    self._append_token(data)
+                    self._ai_buffer += data
+                    self._append_stream_token(data)
                 elif kind == "thinking":
                     self._set_status(data)
                 elif kind == "stats":
@@ -302,25 +410,38 @@ class App:
             pass
         self.root.after(POLL_MS, self._poll_queue)
 
-    def _append_token(self, token: str):
+    def _append_stream_token(self, token: str):
+        """Fast path while streaming: append raw token to keep UI responsive."""
+        if self.history and self.history[-1]["role"] == "assistant":
+            self.history[-1]["content"] = self._ai_buffer
         self._chat.config(state="normal")
-        self._chat.insert(tk.END, token, "ai_txt")
+        self._chat.insert("end-1c", token, "ai_txt")
         self._chat.config(state="disabled")
         self._chat.see(tk.END)
+
+    def _render_final_ai(self):
+        """Final pass: replace streamed raw text with formatted markdown."""
         if self.history and self.history[-1]["role"] == "assistant":
-            self.history[-1]["content"] += token
+            self.history[-1]["content"] = self._ai_buffer
+        self._chat.config(state="normal")
+        self._chat.delete("ai_msg_start", "end-1c")
+        _insert_markdown(self._chat, self._ai_buffer)
+        self._chat.config(state="disabled")
+        self._chat.see(tk.END)
 
     def _on_done(self):
         self._sending = False
         self._send_btn.config(state="normal")
         self._stop_btn.config(state="disabled")
         self._input.config(state="normal")
-        # Finalize chat area
+        # Final clean render of AI response
+        self._render_final_ai()
         self._chat.config(state="normal")
+        if not self._ai_buffer.strip() and not self._cancel_event.is_set():
+            self._chat.insert(tk.END, "[sem texto gerado]\n", "thinking")
         if self._cancel_event.is_set():
-            self._chat.insert(tk.END, " [interrompido]\n\n", "thinking")
-        else:
-            self._chat.insert(tk.END, "\n\n", "ai_txt")
+            self._chat.insert(tk.END, "[interrompido]\n", "thinking")
+        self._chat.insert(tk.END, "\n")
         self._chat.config(state="disabled")
         self._chat.see(tk.END)
         # Trim + save
@@ -390,6 +511,7 @@ class App:
         self._stop_btn.config(state="normal")
         self._input.config(state="disabled")
         self._stats_var.set("")
+        self._ai_buffer = ""
 
         # Append to history and chat display
         self.history.append({"role": "user",      "content": text})
@@ -398,6 +520,9 @@ class App:
         self._chat.insert(tk.END, "Você:  ", "user_lbl")
         self._chat.insert(tk.END, text + "\n\n", "user_txt")
         self._chat.insert(tk.END, "AI:  ", "ai_lbl")
+        # Mark where AI content starts — used by _rerender_ai to re-render from here
+        self._chat.mark_set("ai_msg_start", "end-1c")
+        self._chat.mark_gravity("ai_msg_start", "left")
         self._chat.config(state="disabled")
         self._chat.see(tk.END)
 

@@ -29,6 +29,21 @@ _DEFAULTS: Dict = {
 }
 
 
+def _clean_history(history: list) -> list:
+    cleaned = []
+    for msg in history:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if role == "assistant" and not content.strip():
+            continue
+        if cleaned:
+            prev = cleaned[-1]
+            if prev.get("role") == role and prev.get("content", "") == content:
+                continue
+        cleaned.append(msg)
+    return cleaned
+
+
 def load_profiles() -> Dict:
     os.makedirs(DATA_DIR, exist_ok=True)
     if os.path.exists(PROFILES_FILE):
@@ -38,7 +53,7 @@ def load_profiles() -> Dict:
             if data:
                 # Ensure every profile has a history list
                 for v in data.values():
-                    v.setdefault("history", [])
+                    v["history"] = _clean_history(v.setdefault("history", []))
                 return data
         except Exception:
             pass
@@ -50,13 +65,9 @@ def load_profiles() -> Dict:
 
 def save_profiles(profiles: Dict) -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
-    # Strip empty assistant placeholders that may have been left by an interrupted generation
     clean = {}
     for key, profile in profiles.items():
-        history = [
-            msg for msg in profile.get("history", [])
-            if not (msg.get("role") == "assistant" and not msg.get("content", "").strip())
-        ]
+        history = _clean_history(profile.get("history", []))
         clean[key] = {**profile, "history": history}
     with open(PROFILES_FILE, "w", encoding="utf-8") as f:
         json.dump(clean, f, ensure_ascii=False, indent=2)
