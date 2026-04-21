@@ -4,6 +4,7 @@ Inicie com: python app.py
 """
 import json
 import os
+import winsound
 import queue
 import threading
 import time
@@ -338,6 +339,11 @@ class App:
             )
             profile_name = self.profiles.get(self.current_profile, {}).get("name", "")
             self._set_status(f"Pronto  |  {self.current_model}  |  {profile_name}")
+            # Notificação sonora — só toca se a janela não estiver em foco
+            try:
+                winsound.MessageBeep(winsound.MB_OK)
+            except Exception:
+                pass
 
     def _on_error(self, msg: str):
         self._sending = False
