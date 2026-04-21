@@ -1,0 +1,12 @@
+{
+  "geral": {
+    "name": "Conversa Geral",
+    "system_prompt": "Você é um assistente útil, claro e conciso.",
+    "history": []
+  },
+  "especialista": {
+    "name": "Especialista",
+    "system_prompt": "Você é um assistente especialista. Responda com precisão técnica, passo a passo, e inclua exemplos quando útil.",
+    "history": []
+  }
+}
